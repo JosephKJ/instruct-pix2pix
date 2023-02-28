@@ -25,7 +25,7 @@ class CFGDenoiser(nn.Module):
         super().__init__()
         self.inner_model = model
 
-    def forward(self, z, sigma, cond, uncond, text_cfg_scale, image_cfg_scale):
+    def forward(self, z, sigma, cond, uncond, text_cfg_scale, image_cfg_scale, mask):
         cfg_z = einops.repeat(z, "1 ... -> n ...", n=3)
         cfg_sigma = einops.repeat(sigma, "1 ... -> n ...", n=3)
         cfg_cond = {
@@ -33,7 +33,10 @@ class CFGDenoiser(nn.Module):
             "c_concat": [torch.cat([cond["c_concat"][0], cond["c_concat"][0], uncond["c_concat"][0]])],
         }
         out_cond, out_img_cond, out_uncond = self.inner_model(cfg_z, cfg_sigma, cond=cfg_cond).chunk(3)
-        return out_uncond + text_cfg_scale * (out_cond - out_img_cond) + image_cfg_scale * (out_img_cond - out_uncond)
+        if mask:
+            return out_uncond + text_cfg_scale * (out_cond - out_img_cond) * mask + image_cfg_scale * (out_img_cond - out_uncond)
+        else:
+            return out_uncond + text_cfg_scale * (out_cond - out_img_cond) + image_cfg_scale * (out_img_cond - out_uncond)
 
 
 def load_model_from_config(config, ckpt, vae_ckpt=None, verbose=False):
@@ -68,6 +71,7 @@ def main():
     parser.add_argument("--ckpt", default="checkpoints/instruct-pix2pix-00-22000.ckpt", type=str)
     parser.add_argument("--vae-ckpt", default=None, type=str)
     parser.add_argument("--input", required=True, type=str)
+    parser.add_argument("--mask", required=True, type=str)
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--edit", required=True, type=str)
     parser.add_argument("--cfg-text", default=7.5, type=float)
@@ -91,6 +95,17 @@ def main():
     height = int((height * factor) // 64) * 64
     input_image = ImageOps.fit(input_image, (width, height), method=Image.Resampling.LANCZOS)
 
+    if args.mask == "":
+        input_mask = None
+    else:
+        input_mask = Image.open(args.mask).convert('L')
+        input_mask = input_mask.resize((width // 8, height // 8), Image.Resampling.LANCZOS)
+        input_mask = np.array(input_mask).astype(np.float32) / 255.0
+        input_mask = input_mask[None, None]
+        input_mask[input_mask < 0.5] = 0
+        input_mask[input_mask >= 0.5] = 1
+        input_mask = torch.from_numpy(input_mask).cuda()
+
     if args.edit == "":
         input_image.save(args.output)
         return
@@ -113,6 +128,7 @@ def main():
             "uncond": uncond,
             "text_cfg_scale": args.cfg_text,
             "image_cfg_scale": args.cfg_image,
+            "mask": input_mask,
         }
         torch.manual_seed(seed)
         z = torch.randn_like(cond["c_concat"][0]) * sigmas[0]
