@@ -14,6 +14,8 @@ from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image, ImageOps
 from torch import autocast
+from clip_interrogator import Config as CIConfig
+from clip_interrogator import Interrogator
 
 sys.path.append("./stable_diffusion")
 
@@ -33,7 +35,7 @@ class CFGDenoiser(nn.Module):
             "c_concat": [torch.cat([cond["c_concat"][0], cond["c_concat"][0], uncond["c_concat"][0]])],
         }
         out_cond, out_img_cond, out_uncond = self.inner_model(cfg_z, cfg_sigma, cond=cfg_cond).chunk(3)
-        if mask:
+        if mask is not None:
             return out_uncond + text_cfg_scale * (out_cond - out_img_cond) * mask + image_cfg_scale * (out_img_cond - out_uncond)
         else:
             return out_uncond + text_cfg_scale * (out_cond - out_img_cond) + image_cfg_scale * (out_img_cond - out_uncond)
@@ -74,6 +76,7 @@ def main():
     parser.add_argument("--mask", required=True, type=str)
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--edit", required=True, type=str)
+    parser.add_argument("--reference-image", default='', type=str)
     parser.add_argument("--cfg-text", default=7.5, type=float)
     parser.add_argument("--cfg-image", default=1.5, type=float)
     parser.add_argument("--seed", type=int)
@@ -106,13 +109,32 @@ def main():
         input_mask[input_mask >= 0.5] = 1
         input_mask = torch.from_numpy(input_mask).cuda()
 
+    if args.reference_image == '':
+        caption_for_reference_image = None
+    else:
+        ref_image = Image.open(args.reference_image).convert("RGB")
+        ci_config = CIConfig()
+        ci_config.blip_num_beams = 64
+        ci_config.blip_offload = False
+        ci_config.clip_model_name = 'ViT-L-14/openai'   # "ViT-L-14/openai" "ViT-H-14/laion2b_s32b_b79k"
+        ci = Interrogator(ci_config)
+
+        ci.config.chunk_size = 2048 if ci.config.clip_model_name == "ViT-L-14/openai" else 1024
+        ci.config.flavor_intermediate_count = 2048 if ci.config.clip_model_name == "ViT-L-14/openai" else 1024
+        caption_for_reference_image = ci.interrogate_fast(ref_image).split(',')[:3]
+        caption_for_reference_image = ','.join(str(x) for x in caption_for_reference_image)
+        print(caption_for_reference_image)
+
     if args.edit == "":
         input_image.save(args.output)
         return
 
     with torch.no_grad(), autocast("cuda"), model.ema_scope():
         cond = {}
-        cond["c_crossattn"] = [model.get_learned_conditioning([args.edit])]
+        if caption_for_reference_image is not None:
+            cond["c_crossattn"] = [model.get_learned_conditioning([caption_for_reference_image])]
+        else:
+            cond["c_crossattn"] = [model.get_learned_conditioning([args.edit])]
         input_image = 2 * torch.tensor(np.array(input_image)).float() / 255 - 1
         input_image = rearrange(input_image, "h w c -> 1 c h w").to(model.device)
         cond["c_concat"] = [model.encode_first_stage(input_image).mode()]
