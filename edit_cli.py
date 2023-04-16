@@ -73,7 +73,7 @@ def main():
     parser.add_argument("--ckpt", default="checkpoints/instruct-pix2pix-00-22000.ckpt", type=str)
     parser.add_argument("--vae-ckpt", default=None, type=str)
     parser.add_argument("--input", required=True, type=str)
-    parser.add_argument("--mask", required=True, type=str)
+    parser.add_argument("--mask", default=None, type=str)
     parser.add_argument("--output", required=True, type=str)
     parser.add_argument("--edit", required=True, type=str)
     parser.add_argument("--reference-image", default='', type=str)
@@ -98,7 +98,7 @@ def main():
     height = int((height * factor) // 64) * 64
     input_image = ImageOps.fit(input_image, (width, height), method=Image.Resampling.LANCZOS)
 
-    if args.mask == "":
+    if args.mask == None:
         input_mask = None
     else:
         input_mask = Image.open(args.mask).convert('L')
