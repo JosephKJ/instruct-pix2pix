@@ -240,6 +240,9 @@ class ResBlock(TimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
+        self.in_layers_features = None
+        self.out_layers_features = None
+
     def forward(self, x, emb):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
@@ -261,6 +264,7 @@ class ResBlock(TimestepBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
+            self.in_layers_features = h
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
@@ -272,6 +276,7 @@ class ResBlock(TimestepBlock):
         else:
             h = h + emb_out
             h = self.out_layers(h)
+        self.out_layers_features = h
         return self.skip_connection(x) + h
 
 

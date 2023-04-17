@@ -1,7 +1,7 @@
 config:
-  experiment_name: "horse_in_mud"
+  experiment_name: "girl_with_sunglasses"
   init_img: ""
-  prompt: "a photo of a horse in mud"
+  prompt: "Put on a pair of sunglasses"
   scale: 5.0
   ddim_steps: 50
   seed: 50

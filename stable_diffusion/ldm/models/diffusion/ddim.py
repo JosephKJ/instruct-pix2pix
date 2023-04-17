@@ -80,7 +80,7 @@ class DDIMSampler(object):
                ):
         if conditioning is not None:
             if isinstance(conditioning, dict):
-                cbs = conditioning[list(conditioning.keys())[0]].shape[0]
+                cbs = conditioning[list(conditioning.keys())[0]][0].shape[0]
                 if cbs != batch_size:
                     print(f"Warning: Got {cbs} conditionings but batch-size is {batch_size}")
             else:
@@ -171,11 +171,19 @@ class DDIMSampler(object):
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
             e_t = self.model.apply_model(x, t, c)
         else:
-            x_in = torch.cat([x] * 2)
-            t_in = torch.cat([t] * 2)
-            c_in = torch.cat([unconditional_conditioning, c])
-            e_t_uncond, e_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
-            e_t = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
+            x_in = torch.cat([x] * 3)
+            t_in = torch.cat([t] * 3)
+
+            # c_in = torch.cat([unconditional_conditioning, c])
+            cfg_cond = {
+                "c_crossattn": [torch.cat([c["c_crossattn"][0], unconditional_conditioning["c_crossattn"][0], unconditional_conditioning["c_crossattn"][0]])],
+                "c_concat": [torch.cat([c["c_concat"][0], c["c_concat"][0], unconditional_conditioning["c_concat"][0]])],
+            }
+            c_in = cfg_cond
+            out_cond, out_img_cond, out_uncond = self.model.apply_model(x_in, t_in, c_in).chunk(3)
+            text_cfg_scale = 7.5
+            image_cfg_scale = 1.5
+            e_t = out_uncond + text_cfg_scale * (out_cond - out_img_cond) + image_cfg_scale * (out_img_cond - out_uncond)
 
         if score_corrector is not None:
             assert self.model.parameterization == "eps"

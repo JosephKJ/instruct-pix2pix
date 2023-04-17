@@ -1,9 +1,10 @@
 import argparse, os
 import torch
 import sys
+import math
 import numpy as np
 from omegaconf import OmegaConf
-from PIL import Image
+from PIL import Image, ImageOps
 from tqdm import tqdm
 from einops import rearrange
 from pytorch_lightning import seed_everything
@@ -119,6 +120,8 @@ def main():
         "--check-safety",
         action='store_true',
     )
+    parser.add_argument("--resolution", default=512, type=int)
+    parser.add_argument("--input_image_path", default='imgs/girl.jpeg', type=str)
 
     opt = parser.parse_args()
     setup_config = OmegaConf.load("./configs/pnp/setup.yaml")
@@ -176,7 +179,7 @@ def main():
         img = Image.fromarray(x_sample.astype(np.uint8))
         img.save(os.path.join(save_path, f"{i}.png"))
 
-    def ddim_sampler_callback(pred_x0, xt, i):
+    def ddim_sampler_callback(pred_x0, i):
         save_feature_maps_callback(i)
         save_sampled_img(pred_x0, i, predicted_samples_path)
 
@@ -206,15 +209,37 @@ def main():
 
     assert exp_config.config.prompt is not None
     prompts = [exp_config.config.prompt]
+    null_token = model.get_learned_conditioning([""])
+
+    input_image = Image.open(opt.input_image_path).convert("RGB")
+    width, height = input_image.size
+    factor = opt.resolution / max(width, height)
+    factor = math.ceil(min(width, height) * factor / 64) * 64 / min(width, height)
+    width = int((width * factor) // 64) * 64
+    height = int((height * factor) // 64) * 64
+    input_image = ImageOps.fit(input_image, (width, height), method=Image.Resampling.LANCZOS)
 
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
     with torch.no_grad():
         with precision_scope("cuda"):
             with model.ema_scope():
-                uc = model.get_learned_conditioning([""])
                 if isinstance(prompts, tuple):
                     prompts = list(prompts)
-                c = model.get_learned_conditioning(prompts)
+
+                # c = model.get_learned_conditioning(prompts)
+                cond = {}
+                cond["c_crossattn"] = [model.get_learned_conditioning(prompts)]
+                input_image = 2 * torch.tensor(np.array(input_image)).float() / 255 - 1
+                input_image = rearrange(input_image, "h w c -> 1 c h w").to(model.device)
+                cond["c_concat"] = [model.encode_first_stage(input_image).mode()]
+                c = cond
+
+                # uc = model.get_learned_conditioning([""])
+                uncond = {}
+                uncond["c_crossattn"] = [null_token]
+                uncond["c_concat"] = [torch.zeros_like(cond["c_concat"][0])]
+                uc = uncond
+
                 shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
 
                 z_enc = None
@@ -225,7 +250,8 @@ def main():
                     ddim_inversion_steps = 999
                     z_enc, _ = sampler.encode_ddim(init_latent, num_steps=ddim_inversion_steps, conditioning=c,unconditional_conditioning=uc,unconditional_guidance_scale=exp_config.config.scale)
                 else:
-                    z_enc = torch.randn([1, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
+                    # z_enc = torch.randn([1, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
+                    z_enc = torch.randn_like(cond["c_concat"][0], device=device)
                 torch.save(z_enc, f"{outpath}/z_enc.pt")
                 samples_ddim, _ = sampler.sample(S=exp_config.config.ddim_steps,
                                 conditioning=c,
